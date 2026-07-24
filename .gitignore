@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+dist/
+build/
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p8
+*.p12
+*.jwk
+secrets/
+credentials/
+
+# Downloaded and generated research data
+data/raw/
+data/normalized/
+data/runs/
+*.parquet
+
+# Editors and OS
+.DS_Store
+.idea/
+.vscode/
