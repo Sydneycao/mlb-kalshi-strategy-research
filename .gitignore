@@ -25,6 +25,7 @@ credentials/
 data/raw/
 data/normalized/
 data/runs/
+data/research/
 *.parquet
 
 # Editors and OS

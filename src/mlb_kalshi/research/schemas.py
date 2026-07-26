@@ -1,0 +1,133 @@
+from __future__ import annotations
+
+import pyarrow as pa  # type: ignore[import-untyped]
+
+UTC_TIMESTAMP = pa.timestamp("us", tz="UTC")
+PRICE = pa.decimal128(8, 4)
+RETURN = pa.decimal128(14, 6)
+
+TIMELINE_SCHEMA = pa.schema(
+    [
+        ("event_ticker", pa.string()),
+        ("game_pk", pa.int64()),
+        ("ticker", pa.string()),
+        ("source", pa.string()),
+        ("yes_team", pa.string()),
+        ("opponent_team", pa.string()),
+        ("away_team", pa.string()),
+        ("home_team", pa.string()),
+        ("scheduled_start_utc", UTC_TIMESTAMP),
+        ("minute_start_utc", UTC_TIMESTAMP),
+        ("minute_end_utc", UTC_TIMESTAMP),
+        ("minutes_from_scheduled_start", pa.int32()),
+        ("game_phase", pa.string()),
+        ("quote_observed", pa.bool_()),
+        ("yes_bid_open", PRICE),
+        ("yes_ask_open", PRICE),
+        ("yes_bid_close", PRICE),
+        ("yes_ask_close", PRICE),
+        ("yes_price_close", PRICE),
+        ("yes_open_spread", PRICE),
+        ("yes_close_spread", PRICE),
+        ("missing_yes_bid_open", pa.bool_()),
+        ("missing_yes_ask_open", pa.bool_()),
+        ("volume_fp", pa.string()),
+        ("open_interest_fp", pa.string()),
+        ("observed_play_count", pa.int32()),
+        ("observed_scoring_play_count", pa.int32()),
+        ("observed_events_json", pa.string()),
+        ("observed_statuses_json", pa.string()),
+        ("last_event_observed_at_utc", UTC_TIMESTAMP),
+        ("last_event", pa.string()),
+        ("last_event_description", pa.string()),
+        ("inning", pa.int32()),
+        ("half_inning", pa.string()),
+        ("outs", pa.int32()),
+        ("batting_team", pa.string()),
+        ("yes_team_is_batting", pa.bool_()),
+        ("away_score", pa.int32()),
+        ("home_score", pa.int32()),
+        ("yes_score", pa.int32()),
+        ("opponent_score", pa.int32()),
+        ("yes_lead", pa.int32()),
+        ("yes_runs_scored_this_minute", pa.int32()),
+        ("opponent_runs_scored_this_minute", pa.int32()),
+        ("score_changed_this_minute", pa.bool_()),
+        ("on_first", pa.bool_()),
+        ("on_second", pa.bool_()),
+        ("on_third", pa.bool_()),
+        ("base_runners", pa.int32()),
+        ("runners_in_scoring_position", pa.int32()),
+        ("threat_against_yes", pa.bool_()),
+        ("half_inning_ended_this_minute", pa.bool_()),
+        ("game_over_observed", pa.bool_()),
+    ]
+)
+
+SIGNAL_SCHEMA = pa.schema(
+    [
+        ("plan_id", pa.string()),
+        ("strategy", pa.string()),
+        ("event_ticker", pa.string()),
+        ("ticker", pa.string()),
+        ("action", pa.string()),
+        ("observed_minute_start_utc", UTC_TIMESTAMP),
+        ("signal_available_at_utc", UTC_TIMESTAMP),
+        ("reason", pa.string()),
+        ("parameters_json", pa.string()),
+    ]
+)
+
+EXECUTION_SCHEMA = pa.schema(
+    [
+        ("plan_id", pa.string()),
+        ("strategy", pa.string()),
+        ("scenario", pa.string()),
+        ("event_ticker", pa.string()),
+        ("ticker", pa.string()),
+        ("status", pa.string()),
+        ("entry_signal_after_utc", UTC_TIMESTAMP),
+        ("entry_execution_at_utc", UTC_TIMESTAMP),
+        ("entry_delay_seconds", pa.int64()),
+        ("missing_entry_quote_minutes", pa.int32()),
+        ("entry_raw_ask", PRICE),
+        ("entry_bid", PRICE),
+        ("entry_spread", PRICE),
+        ("entry_price", PRICE),
+        ("exit_signal_after_utc", UTC_TIMESTAMP),
+        ("effective_exit_available_at_utc", UTC_TIMESTAMP),
+        ("exit_execution_at_utc", UTC_TIMESTAMP),
+        ("exit_delay_seconds", pa.int64()),
+        ("missing_exit_quote_minutes", pa.int32()),
+        ("exit_raw_bid", PRICE),
+        ("exit_ask", PRICE),
+        ("exit_spread", PRICE),
+        ("exit_price", PRICE),
+        ("holding_seconds", pa.int64()),
+        ("pnl_dollars", PRICE),
+        ("return_on_cost", RETURN),
+        ("price_rule", pa.string()),
+    ]
+)
+
+SUMMARY_SCHEMA = pa.schema(
+    [
+        ("strategy", pa.string()),
+        ("scenario", pa.string()),
+        ("plans", pa.int32()),
+        ("filled_trades", pa.int32()),
+        ("entry_unfilled", pa.int32()),
+        ("exit_unfilled", pa.int32()),
+        ("winning_trades", pa.int32()),
+        ("win_rate", RETURN),
+        ("total_pnl_dollars", PRICE),
+        ("mean_pnl_dollars", PRICE),
+        ("mean_return_on_cost", RETURN),
+        ("mean_entry_delay_seconds", pa.decimal128(14, 2)),
+        ("mean_exit_delay_seconds", pa.decimal128(14, 2)),
+        ("missing_entry_quote_minutes", pa.int64()),
+        ("missing_exit_quote_minutes", pa.int64()),
+        ("mean_entry_spread", PRICE),
+        ("mean_exit_spread", PRICE),
+    ]
+)
