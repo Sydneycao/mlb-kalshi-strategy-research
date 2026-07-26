@@ -5,6 +5,7 @@ import os
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -216,5 +217,7 @@ def _json_default(value: object) -> str:
     if isinstance(value, datetime):
         return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
     if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, Decimal):
         return str(value)
     raise TypeError(f"cannot JSON serialize {type(value).__name__}")

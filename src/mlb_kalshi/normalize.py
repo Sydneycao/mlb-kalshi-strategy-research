@@ -187,8 +187,12 @@ def normalize_candlesticks(
             "ticker": market_ticker,
             "source": source,
             "end_period_time_utc": datetime.fromtimestamp(end_ts, tz=UTC),
-            "volume_fp": _as_string(candle.get("volume_fp")),
-            "open_interest_fp": _as_string(candle.get("open_interest_fp")),
+            "volume_fp": _as_string(
+                candle.get("volume_fp", candle.get("volume"))
+            ),
+            "open_interest_fp": _as_string(
+                candle.get("open_interest_fp", candle.get("open_interest"))
+            ),
         }
         for quote in ("yes_bid", "yes_ask", "price"):
             values = candle.get(quote) or {}
@@ -202,7 +206,10 @@ def normalize_candlesticks(
                 "min_dollars",
                 "max_dollars",
             ):
-                row[f"{quote}_{field}"] = _as_string(values.get(field))
+                legacy_field = field.removesuffix("_dollars")
+                row[f"{quote}_{field}"] = _as_string(
+                    values.get(field, values.get(legacy_field))
+                )
         rows.append(row)
     return rows
 

@@ -9,7 +9,8 @@ researching settled `KXMLBGAME` markets. The current scope is deliberately narro
   matching.
 
 It contains no trading strategy, order placement, credentialed endpoint, or runtime
-LLM dependency.
+LLM dependency in the ingestion stage. The research stage described below simulates
+historical signals only; it never places orders.
 
 ## Data sources
 
@@ -110,4 +111,63 @@ uv run --python 3.12 pytest
 The tests cover team aliases, UTC conversion, doubleheader disambiguation, final
 result matching, cursor pagination, and rate-limit retry behavior. The manual
 `workflow_dispatch` GitHub Actions workflow runs lint/tests and optionally runs the
-public API probe plus bounded live smoke test.
+public API probe, bounded live smoke test, and bias-safe backtest.
+
+## Minute timeline and strategy research
+
+After a successful smoke run, build the unified timeline and simulate all four
+initial strategy definitions:
+
+```bash
+uv run --python 3.12 mlb-kalshi backtest
+```
+
+The latest smoke run is selected automatically. A specific run and subset of
+strategies can be selected explicitly:
+
+```bash
+uv run --python 3.12 mlb-kalshi backtest \
+  --input-run smoke_20260724T022147.632330Z \
+  --strategies buy_the_dip,threat_resolution
+```
+
+Each market gets a continuous minute grid from three hours before scheduled first
+pitch through settlement. A row represents `[minute_start_utc, minute_end_utc)`.
+MLB events with timestamps inside that interval update game state only at
+`minute_end_utc`. Quotes are never forward-filled.
+
+The execution engine enforces these rules for every strategy:
+
+- a signal observed in minute `t` becomes available only when `t` closes;
+- a purchase uses the first non-null YES ask **open** at or after that close;
+- a sale uses the first non-null YES bid **open** at or after its signal closes;
+- same-minute high, low, close, and trade prices are never executable;
+- missing-quote minutes, bid/ask spreads, execution timestamps, and delays are
+  retained for both legs;
+- results are emitted for base execution and one-cent adverse slippage
+  (`buy + $0.01`, `sell - $0.01`).
+
+The initial strategy modules are deliberately fixed rather than optimized:
+
+- **Pregame-to-Live** buys the contract with the highest two-sided midpoint five
+  minutes before scheduled start and exits after 15 live minutes.
+- **Buy the Dip** buys after a 10-cent midpoint decline from the prior 15-minute
+  peak and exits on a five-cent recovery, game end, or 20-minute maximum hold.
+- **Threat Resolution** buys the defending team after an opponent's runner-in-
+  scoring-position threat ends without a run and holds for 10 minutes or game end.
+- **Late-Game Momentum** buys a team that scores to lead in inning seven or later
+  and exits at game end or after 30 minutes.
+
+Research outputs are saved under `data/research/<run_id>/`:
+
+- `minute_game_market_timeline.parquet`
+- `strategy_signals.parquet`
+- `strategy_executions.parquet`
+- `strategy_summary.parquet`
+- `strategy_summary.csv`
+- `strategy_report.md`
+- `manifest.json`
+
+These are smoke-sample diagnostics, not evidence that a strategy is profitable.
+Each plan represents one contract; exchange fees are not yet modeled. Parameter
+search and out-of-sample evaluation should happen only after timeline audits pass.

@@ -9,6 +9,7 @@ from pathlib import Path
 from mlb_kalshi.config import Settings
 from mlb_kalshi.logging import configure_logging
 from mlb_kalshi.pipeline import ResearchPipeline
+from mlb_kalshi.research.pipeline import BacktestPipeline
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -33,6 +34,31 @@ def build_parser() -> argparse.ArgumentParser:
         help="Number of Kalshi game events to ingest (default: env or 10).",
     )
     smoke.add_argument("--output-dir", type=Path)
+
+    backtest = subparsers.add_parser(
+        "backtest",
+        help="Build the minute timeline and run bias-safe strategy simulations.",
+    )
+    backtest.add_argument(
+        "--input-run",
+        default=None,
+        help="Smoke run ID or manifest path (default: latest local smoke run).",
+    )
+    backtest.add_argument(
+        "--strategies",
+        default="all",
+        help=(
+            "Comma-separated strategy names or 'all': pregame_to_live, "
+            "buy_the_dip, threat_resolution, late_game_momentum."
+        ),
+    )
+    backtest.add_argument(
+        "--pregame-minutes",
+        type=int,
+        default=180,
+        help="Minutes before scheduled start included in each market timeline.",
+    )
+    backtest.add_argument("--output-dir", type=Path)
     return parser
 
 
@@ -52,9 +78,22 @@ def run(argv: Sequence[str] | None = None) -> int:
     if args.command == "probe":
         summary = pipeline.probe()
         exit_code = 1 if summary["failed"] else 0
-    else:
+    elif args.command == "smoke":
         summary = pipeline.smoke()
         exit_code = 1 if summary["counts"]["kalshi_games_selected"] == 0 else 0
+    else:
+        if args.pregame_minutes < 0:
+            print("configuration error: pregame-minutes cannot be negative", file=sys.stderr)
+            return 2
+        strategy_names = [
+            name.strip() for name in args.strategies.split(",") if name.strip()
+        ]
+        summary = BacktestPipeline(settings).run(
+            input_run=args.input_run,
+            strategy_names=strategy_names,
+            pregame_minutes=args.pregame_minutes,
+        )
+        exit_code = 0
     print(json.dumps(summary, indent=2, sort_keys=True, default=str))
     return exit_code
 

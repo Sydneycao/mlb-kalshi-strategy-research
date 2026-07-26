@@ -41,3 +41,6 @@ jobs:
         env:
           MLB_KALSHI_MAX_GAMES: ${{ inputs.max_games }}
         run: mlb-kalshi smoke
+      - name: Build timeline and run strategy simulations
+        if: ${{ inputs.run_live_smoke }}
+        run: mlb-kalshi backtest
