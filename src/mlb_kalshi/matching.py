@@ -5,6 +5,9 @@ from datetime import timedelta
 from typing import Any
 
 from mlb_kalshi.models import KalshiGame, MatchedGame, MlbGame, Rejection
+from mlb_kalshi.time import optional_utc
+
+MAX_RESEARCH_MARKET_WINDOW = timedelta(days=7)
 
 
 def mlb_winner(game: MlbGame) -> str | None:
@@ -36,6 +39,29 @@ def match_game(
             market_game,
             "MALFORMED_MARKET_GROUP",
             "; ".join(market_game.construction_errors),
+            base_details,
+        )
+    excessive_windows = [
+        {
+            "ticker": market.get("ticker"),
+            "window_seconds": int(window.total_seconds()),
+        }
+        for market in market_game.markets
+        if (window := _market_duration(market)) is not None
+        and window > MAX_RESEARCH_MARKET_WINDOW
+    ]
+    if excessive_windows:
+        base_details["excessive_market_windows"] = excessive_windows
+        base_details["max_market_window_seconds"] = int(
+            MAX_RESEARCH_MARKET_WINDOW.total_seconds()
+        )
+        return _rejection(
+            market_game,
+            "EXCESSIVE_MARKET_WINDOW",
+            (
+                "market remained open or unsettled for more than seven days "
+                "and is unsafe for a single-game research timeline"
+            ),
             base_details,
         )
     if (
@@ -202,6 +228,18 @@ def _event_game_number(event_ticker: str) -> int | None:
     # Legacy KXMLBGAME tickers omitted scheduled time. Their second game uses a
     # trailing "2"; the otherwise unnumbered event is the first game.
     return int(match.group("number")) if match else 1
+
+
+def _market_duration(market: dict[str, Any]) -> timedelta | None:
+    start = optional_utc(market.get("open_time"))
+    end = (
+        optional_utc(market.get("settlement_ts"))
+        or optional_utc(market.get("close_time"))
+        or optional_utc(market.get("expiration_time"))
+    )
+    if start is None or end is None or end < start:
+        return None
+    return end - start
 
 
 def _rejection(

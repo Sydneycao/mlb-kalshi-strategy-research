@@ -22,7 +22,7 @@ Kalshi's public market-data API is queried at
 - discovers recent settled markets from `GET /markets`;
 - discovers archived settled markets from `GET /historical/markets`;
 - routes one-minute candles to the live or historical market endpoint based on the
-  market tier;
+  market tier and splits long requests below the 5,000-candle API limit;
 - splits each ticker's trade window at `trades_created_ts`, querying current and
   historical trades as applicable.
 
@@ -84,11 +84,14 @@ The smoke-test default is also configurable through `MLB_KALSHI_MAX_GAMES`. See
 The smoke test groups Kalshi contracts by `event_ticker`, so the two complementary
 team contracts count as one baseball game. A match must pass, in order:
 
-1. both team names normalize to the same unordered MLB team pair;
-2. the date encoded in the Kalshi event ticker equals MLB `officialDate`;
-3. the Eastern-time scheduled start encoded in that ticker, normalized to UTC, is
-   the uniquely nearest MLB scheduled time inside the configured tolerance;
-4. the Kalshi settled winner equals the winner implied by the final MLB score.
+1. no contract remains open or unsettled for more than seven days, which would
+   make a single-game minute timeline unsafe;
+2. both team names normalize to the same unordered MLB team pair;
+3. the date encoded in the Kalshi event ticker equals MLB `officialDate`;
+4. the scheduled start is the uniquely nearest MLB time inside the configured
+   tolerance; legacy tickers without a start time use a unique team/date match
+   and their trailing doubleheader game number;
+5. the Kalshi settled winner equals the winner implied by the final MLB score.
 
 This ordering prevents a second game in a doubleheader from being selected merely
 because its result happens to agree. Unmatched events are not silently discarded.
@@ -126,6 +129,9 @@ deduplicated into the same normalized Parquet files used by a smoke run. A
 `needs_retry` task returns a non-zero exit code; rerunning the same command retries
 only unfinished resources. Resume arguments that conflict with the saved task
 configuration are rejected instead of silently mixing date ranges.
+Events rejected by the deterministic matching/data-quality rules retain market
+metadata and detailed reasons but skip candle, trade, and play downloads because
+they cannot enter a backtest.
 
 Normalized ingestion outputs are:
 

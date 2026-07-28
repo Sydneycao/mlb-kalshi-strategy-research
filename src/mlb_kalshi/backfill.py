@@ -408,14 +408,17 @@ class HistoricalBackfillPipeline:
 
         for market in game.markets:
             ticker = str(market.get("ticker", ""))
-            window = market_window(market)
-            if not ticker or window is None:
-                raise ValueError("market has no ticker or valid open/settlement window")
-            start, end = window
             candle_source = _market_source(market, market_cutoff)
             row = _market_row(game, market)
             row["source"] = candle_source
             market_rows.append(row)
+            if not isinstance(match_result, MatchedGame):
+                continue
+
+            window = market_window(market)
+            if not ticker or window is None:
+                raise ValueError("market has no ticker or valid open/settlement window")
+            start, end = window
 
             candle_payload = kalshi.get_candlesticks(
                 market=market,

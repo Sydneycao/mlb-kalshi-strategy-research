@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Callable
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any, Literal
 from urllib.parse import quote
 
@@ -15,6 +15,7 @@ from mlb_kalshi.storage import RawStore
 from mlb_kalshi.time import optional_utc, unix_seconds
 
 SERIES_TICKER = "KXMLBGAME"
+MAX_CANDLE_WINDOW_MINUTES = 4_999
 
 
 class KalshiClient:
@@ -215,23 +216,56 @@ class KalshiClient:
         end: datetime,
         raw_section: str,
     ) -> JsonObject:
-        ticker = quote(str(market["ticker"]), safe="")
+        market_ticker = str(market["ticker"])
+        ticker = quote(market_ticker, safe="")
         if source == "historical":
             path = f"/historical/markets/{ticker}/candlesticks"
         else:
             path = f"/series/{SERIES_TICKER}/markets/{ticker}/candlesticks"
-        payload = self._http.get_json(
-            path,
-            params={
-                "start_ts": unix_seconds(start),
-                "end_ts": unix_seconds(end),
-                "period_interval": 1,
-            },
-        )
-        self._raw.write_json(
-            "kalshi", raw_section, "candlesticks", str(market["ticker"]), payload=payload
-        )
-        return payload
+        chunk_span = timedelta(minutes=MAX_CANDLE_WINDOW_MINUTES)
+        chunk_start = start
+        chunk_number = 0
+        candles: dict[str, dict[str, Any]] = {}
+        multi_chunk = end - start > chunk_span
+        while chunk_start <= end:
+            chunk_number += 1
+            chunk_end = min(end, chunk_start + chunk_span)
+            payload = self._http.get_json(
+                path,
+                params={
+                    "start_ts": unix_seconds(chunk_start),
+                    "end_ts": unix_seconds(chunk_end),
+                    "period_interval": 1,
+                },
+            )
+            raw_name = (
+                f"{market_ticker}_chunk_{chunk_number:04d}"
+                if multi_chunk
+                else market_ticker
+            )
+            self._raw.write_json(
+                "kalshi", raw_section, "candlesticks", raw_name, payload=payload
+            )
+            chunk_candles = payload.get("candlesticks", [])
+            if not isinstance(chunk_candles, list):
+                raise ValueError(
+                    f"{path} response field 'candlesticks' is not a list"
+                )
+            for index, candle in enumerate(chunk_candles):
+                if isinstance(candle, dict):
+                    key = str(candle.get("end_period_ts", f"{chunk_number}:{index}"))
+                    candles[key] = candle
+            if chunk_end >= end:
+                break
+            # Adjacent calls overlap at one boundary. The merge above removes any
+            # duplicate candle while ensuring no minute can fall through a gap.
+            chunk_start = chunk_end
+        return {
+            "candlesticks": sorted(
+                candles.values(),
+                key=lambda candle: float(candle.get("end_period_ts", 0)),
+            )
+        }
 
     def get_trades(
         self,

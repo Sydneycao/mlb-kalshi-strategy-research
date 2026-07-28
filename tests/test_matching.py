@@ -203,6 +203,37 @@ def test_legacy_doubleheader_uses_ticker_game_number() -> None:
     assert result.start_delta_seconds is None
 
 
+def test_excessive_market_window_is_rejected() -> None:
+    market = _market_game(17)
+    market = KalshiGame(
+        event_ticker=market.event_ticker,
+        source=market.source,
+        markets=(
+            {
+                "ticker": "KXMLBGAME-LONG-BOS",
+                "open_time": "2025-07-01T00:00:00Z",
+                "settlement_ts": "2025-07-12T00:00:00Z",
+            },
+        ),
+        teams=market.teams,
+        scheduled_start_utc=market.scheduled_start_utc,
+        game_date=market.game_date,
+        winner=market.winner,
+    )
+    game = _mlb_game(
+        game_pk=1,
+        start_hour=17,
+        away_score=5,
+        home_score=3,
+        game_number=1,
+    )
+
+    result = match_game(market, [game], tolerance=timedelta(hours=2))
+
+    assert isinstance(result, Rejection)
+    assert result.reason_code == "EXCESSIVE_MARKET_WINDOW"
+
+
 def test_contract_no_subtitle_does_not_imply_winner() -> None:
     shared = {
         "event_ticker": "KXMLBGAME-25JUL121310BOSNYY",
