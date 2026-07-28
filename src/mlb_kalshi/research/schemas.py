@@ -4,6 +4,8 @@ import pyarrow as pa  # type: ignore[import-untyped]
 
 UTC_TIMESTAMP = pa.timestamp("us", tz="UTC")
 PRICE = pa.decimal128(8, 4)
+MONEY = pa.decimal128(20, 4)
+QUANTITY = pa.decimal128(20, 2)
 RETURN = pa.decimal128(14, 6)
 
 TIMELINE_SCHEMA = pa.schema(
@@ -86,27 +88,45 @@ EXECUTION_SCHEMA = pa.schema(
         ("event_ticker", pa.string()),
         ("ticker", pa.string()),
         ("status", pa.string()),
+        ("unfilled_reason", pa.string()),
+        ("requested_contracts", QUANTITY),
+        ("entry_filled_contracts", QUANTITY),
+        ("exit_filled_contracts", QUANTITY),
         ("entry_signal_after_utc", UTC_TIMESTAMP),
         ("entry_execution_at_utc", UTC_TIMESTAMP),
         ("entry_delay_seconds", pa.int64()),
         ("missing_entry_quote_minutes", pa.int32()),
+        ("insufficient_entry_capacity_minutes", pa.int32()),
+        ("entry_compatible_trade_volume", QUANTITY),
+        ("entry_capacity_contracts", QUANTITY),
         ("entry_raw_ask", PRICE),
         ("entry_bid", PRICE),
         ("entry_spread", PRICE),
         ("entry_price", PRICE),
+        ("entry_notional_dollars", MONEY),
+        ("entry_fee_dollars", MONEY),
         ("exit_signal_after_utc", UTC_TIMESTAMP),
         ("effective_exit_available_at_utc", UTC_TIMESTAMP),
         ("exit_execution_at_utc", UTC_TIMESTAMP),
         ("exit_delay_seconds", pa.int64()),
         ("missing_exit_quote_minutes", pa.int32()),
+        ("insufficient_exit_capacity_minutes", pa.int32()),
+        ("exit_compatible_trade_volume", QUANTITY),
+        ("exit_capacity_contracts", QUANTITY),
         ("exit_raw_bid", PRICE),
         ("exit_ask", PRICE),
         ("exit_spread", PRICE),
         ("exit_price", PRICE),
+        ("exit_notional_dollars", MONEY),
+        ("exit_fee_dollars", MONEY),
         ("holding_seconds", pa.int64()),
-        ("pnl_dollars", PRICE),
+        ("gross_pnl_dollars", MONEY),
+        ("total_fees_dollars", MONEY),
+        ("pnl_dollars", MONEY),
         ("return_on_cost", RETURN),
         ("price_rule", pa.string()),
+        ("capacity_rule", pa.string()),
+        ("fee_rule", pa.string()),
     ]
 )
 
@@ -120,13 +140,18 @@ SUMMARY_SCHEMA = pa.schema(
         ("exit_unfilled", pa.int32()),
         ("winning_trades", pa.int32()),
         ("win_rate", RETURN),
-        ("total_pnl_dollars", PRICE),
-        ("mean_pnl_dollars", PRICE),
+        ("total_filled_contracts", QUANTITY),
+        ("total_gross_pnl_dollars", MONEY),
+        ("total_fees_dollars", MONEY),
+        ("total_pnl_dollars", MONEY),
+        ("mean_pnl_dollars", MONEY),
         ("mean_return_on_cost", RETURN),
         ("mean_entry_delay_seconds", pa.decimal128(14, 2)),
         ("mean_exit_delay_seconds", pa.decimal128(14, 2)),
         ("missing_entry_quote_minutes", pa.int64()),
         ("missing_exit_quote_minutes", pa.int64()),
+        ("insufficient_entry_capacity_minutes", pa.int64()),
+        ("insufficient_exit_capacity_minutes", pa.int64()),
         ("mean_entry_spread", PRICE),
         ("mean_exit_spread", PRICE),
     ]
