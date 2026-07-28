@@ -162,6 +162,11 @@ class RunLayout:
         self.normalized_dir.mkdir(parents=True, exist_ok=False)
         self.run_dir.mkdir(parents=True, exist_ok=False)
 
+    def create_or_resume(self) -> None:
+        self.raw_dir.mkdir(parents=True, exist_ok=True)
+        self.normalized_dir.mkdir(parents=True, exist_ok=True)
+        self.run_dir.mkdir(parents=True, exist_ok=True)
+
 
 class RawStore:
     def __init__(self, root: Path) -> None:

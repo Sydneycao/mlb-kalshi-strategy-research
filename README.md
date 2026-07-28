@@ -1,10 +1,11 @@
 # MLB Kalshi historical market research
 
 This Python 3.12 project provides a production-oriented ingestion foundation for
-researching settled `KXMLBGAME` markets. The current scope is deliberately narrow:
+researching settled `KXMLBGAME` markets. It includes:
 
 - an API availability probe;
 - a configurable, bounded smoke test (10 games by default);
+- a resumable historical backfill (500 games by default);
 - raw-response preservation, normalized Parquet output, and deterministic game
   matching.
 
@@ -21,7 +22,7 @@ Kalshi's public market-data API is queried at
 - discovers recent settled markets from `GET /markets`;
 - discovers archived settled markets from `GET /historical/markets`;
 - routes one-minute candles to the live or historical market endpoint based on the
-  market tier;
+  market tier and splits long requests below the 5,000-candle API limit;
 - splits each ticker's trade window at `trades_created_ts`, querying current and
   historical trades as applicable.
 
@@ -52,7 +53,30 @@ Run the first smoke test:
 uv run --python 3.12 mlb-kalshi smoke --max-games 10
 ```
 
-The default is also configurable through `MLB_KALSHI_MAX_GAMES`. See
+Start a historical batch backfill. A stable `job-id` is the checkpoint name:
+
+```bash
+uv run --python 3.12 mlb-kalshi backfill \
+  --job-id mlb-2025 \
+  --start-date 2025-03-18 \
+  --end-date 2025-09-28 \
+  --max-games 500 \
+  --batch-size 25
+```
+
+If the process is interrupted, run the same job again. The saved dates, game
+limit, and batch size are reused, so they do not need to be repeated:
+
+```bash
+uv run --python 3.12 mlb-kalshi backfill --job-id mlb-2025
+```
+
+Completed games are skipped. Failed or interrupted games are retried. To process a
+bounded number of games per scheduled invocation, add
+`--max-games-this-run 25`; the next invocation continues from the following
+checkpoint.
+
+The smoke-test default is also configurable through `MLB_KALSHI_MAX_GAMES`. See
 [`.env.example`](.env.example) for the complete environment-variable surface.
 
 ## Matching rules
@@ -60,11 +84,14 @@ The default is also configurable through `MLB_KALSHI_MAX_GAMES`. See
 The smoke test groups Kalshi contracts by `event_ticker`, so the two complementary
 team contracts count as one baseball game. A match must pass, in order:
 
-1. both team names normalize to the same unordered MLB team pair;
-2. the date encoded in the Kalshi event ticker equals MLB `officialDate`;
-3. the Eastern-time scheduled start encoded in that ticker, normalized to UTC, is
-   the uniquely nearest MLB scheduled time inside the configured tolerance;
-4. the Kalshi settled winner equals the winner implied by the final MLB score.
+1. no contract remains open or unsettled for more than seven days, which would
+   make a single-game minute timeline unsafe;
+2. both team names normalize to the same unordered MLB team pair;
+3. the date encoded in the Kalshi event ticker equals MLB `officialDate`;
+4. the scheduled start is the uniquely nearest MLB time inside the configured
+   tolerance; legacy tickers without a start time use a unique team/date match
+   and their trailing doubleheader game number;
+5. the Kalshi settled winner equals the winner implied by the final MLB score.
 
 This ordering prevents a second game in a doubleheader from being selected merely
 because its result happens to agree. Unmatched events are not silently discarded.
@@ -83,7 +110,30 @@ data/
 └── runs/<run_id>/            # manifest, counts, errors, rejection details
 ```
 
-Normalized smoke outputs are:
+Smoke runs use timestamped IDs. Backfills use the stable
+`backfill_<job-id>` ID and add:
+
+```text
+data/runs/backfill_<job-id>/
+├── state.json                # per-schedule-chunk and per-game checkpoint state
+├── catalog.json              # fixed Kalshi event catalog for this task
+├── chunks/
+│   ├── schedule/             # 31-day MLB schedule checkpoints
+│   └── games/                # one atomic normalized checkpoint per event
+├── manifest.json             # status: partial, needs_retry, empty, or completed
+└── rejections.json
+```
+
+Every 25 attempts by default, and again before exit, completed chunks are
+deduplicated into the same normalized Parquet files used by a smoke run. A
+`needs_retry` task returns a non-zero exit code; rerunning the same command retries
+only unfinished resources. Resume arguments that conflict with the saved task
+configuration are rejected instead of silently mixing date ranges.
+Events rejected by the deterministic matching/data-quality rules retain market
+metadata and detailed reasons but skip candle, trade, and play downloads because
+they cannot enter a backtest.
+
+Normalized ingestion outputs are:
 
 - `kalshi_markets.parquet`
 - `kalshi_candlesticks_1m.parquet`
@@ -115,15 +165,15 @@ public API probe, bounded live smoke test, and bias-safe backtest.
 
 ## Minute timeline and strategy research
 
-After a successful smoke run, build the unified timeline and simulate all four
-initial strategy definitions:
+After a successful smoke run or completed backfill, build the unified timeline and
+simulate all four initial strategy definitions:
 
 ```bash
 uv run --python 3.12 mlb-kalshi backtest
 ```
 
-The latest smoke run is selected automatically. A specific run and subset of
-strategies can be selected explicitly:
+The latest completed ingestion run is selected automatically. A specific run and
+subset of strategies can be selected explicitly:
 
 ```bash
 uv run --python 3.12 mlb-kalshi backtest \
@@ -132,6 +182,9 @@ uv run --python 3.12 mlb-kalshi backtest \
   --contracts-per-trade 10 \
   --max-volume-participation 0.10
 ```
+
+For the example backfill, use `--input-run backfill_mlb-2025`. Partial or
+`needs_retry` backfills cannot be used for a backtest.
 
 Each market gets a continuous minute grid from three hours before scheduled first
 pitch through settlement. A row represents `[minute_start_utc, minute_end_utc)`.

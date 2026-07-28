@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any, Literal
 from urllib.parse import quote
 
@@ -15,6 +15,7 @@ from mlb_kalshi.storage import RawStore
 from mlb_kalshi.time import optional_utc, unix_seconds
 
 SERIES_TICKER = "KXMLBGAME"
+MAX_CANDLE_WINDOW_MINUTES = 4_999
 
 
 class KalshiClient:
@@ -144,6 +145,68 @@ class KalshiClient:
         self._log.info("kalshi_games_discovered", **metadata["selected"])
         return selected, metadata
 
+    def discover_games_in_range(
+        self,
+        *,
+        start_date: date,
+        end_date: date,
+        max_games: int,
+        max_pages: int,
+    ) -> tuple[list[KalshiGame], dict[str, Any]]:
+        """Discover settled games chronologically inside an inclusive date range.
+
+        Backfills intentionally scan both storage tiers to remain correct as Kalshi's
+        historical cutoff advances. The resulting event catalog is deduplicated before
+        the caller checkpoints it, so subsequent resumes do not need to rediscover it.
+        """
+
+        if end_date < start_date:
+            raise ValueError("end_date cannot precede start_date")
+        if max_games < 1:
+            raise ValueError("max_games must be positive")
+
+        by_event: dict[str, KalshiGame] = {}
+        metadata: dict[str, Any] = {}
+        for source in ("current", "historical"):
+            markets, source_metadata = self.list_settled_markets(
+                source,
+                max_pages=max_pages,
+                target_events=None,
+                raw_section=f"backfill_discovery_{source}",
+            )
+            grouped: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
+            for market in markets:
+                event_ticker = market.get("event_ticker")
+                if isinstance(event_ticker, str):
+                    grouped[event_ticker].append(market)
+            for event_ticker, event_markets in grouped.items():
+                game = build_kalshi_game(event_ticker, source, event_markets)
+                if (
+                    game.game_date is not None
+                    and start_date <= game.game_date <= end_date
+                ):
+                    existing = by_event.get(event_ticker)
+                    if existing is None or len(game.markets) > len(existing.markets):
+                        by_event[event_ticker] = game
+            metadata[source] = source_metadata
+
+        selected = sorted(by_event.values(), key=_backfill_game_sort_key)[:max_games]
+        metadata["selected"] = {
+            "total": len(selected),
+            "current": sum(game.source == "current" for game in selected),
+            "historical": sum(game.source == "historical" for game in selected),
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
+            "max_games": max_games,
+        }
+        metadata["truncated_sources"] = [
+            source
+            for source in ("current", "historical")
+            if bool(metadata[source].get("truncated"))
+        ]
+        self._log.info("kalshi_backfill_games_discovered", **metadata["selected"])
+        return selected, metadata
+
     def get_candlesticks(
         self,
         *,
@@ -153,23 +216,56 @@ class KalshiClient:
         end: datetime,
         raw_section: str,
     ) -> JsonObject:
-        ticker = quote(str(market["ticker"]), safe="")
+        market_ticker = str(market["ticker"])
+        ticker = quote(market_ticker, safe="")
         if source == "historical":
             path = f"/historical/markets/{ticker}/candlesticks"
         else:
             path = f"/series/{SERIES_TICKER}/markets/{ticker}/candlesticks"
-        payload = self._http.get_json(
-            path,
-            params={
-                "start_ts": unix_seconds(start),
-                "end_ts": unix_seconds(end),
-                "period_interval": 1,
-            },
-        )
-        self._raw.write_json(
-            "kalshi", raw_section, "candlesticks", str(market["ticker"]), payload=payload
-        )
-        return payload
+        chunk_span = timedelta(minutes=MAX_CANDLE_WINDOW_MINUTES)
+        chunk_start = start
+        chunk_number = 0
+        candles: dict[str, dict[str, Any]] = {}
+        multi_chunk = end - start > chunk_span
+        while chunk_start <= end:
+            chunk_number += 1
+            chunk_end = min(end, chunk_start + chunk_span)
+            payload = self._http.get_json(
+                path,
+                params={
+                    "start_ts": unix_seconds(chunk_start),
+                    "end_ts": unix_seconds(chunk_end),
+                    "period_interval": 1,
+                },
+            )
+            raw_name = (
+                f"{market_ticker}_chunk_{chunk_number:04d}"
+                if multi_chunk
+                else market_ticker
+            )
+            self._raw.write_json(
+                "kalshi", raw_section, "candlesticks", raw_name, payload=payload
+            )
+            chunk_candles = payload.get("candlesticks", [])
+            if not isinstance(chunk_candles, list):
+                raise ValueError(
+                    f"{path} response field 'candlesticks' is not a list"
+                )
+            for index, candle in enumerate(chunk_candles):
+                if isinstance(candle, dict):
+                    key = str(candle.get("end_period_ts", f"{chunk_number}:{index}"))
+                    candles[key] = candle
+            if chunk_end >= end:
+                break
+            # Adjacent calls overlap at one boundary. The merge above removes any
+            # duplicate candle while ensuring no minute can fall through a gap.
+            chunk_start = chunk_end
+        return {
+            "candlesticks": sorted(
+                candles.values(),
+                key=lambda candle: float(candle.get("end_period_ts", 0)),
+            )
+        }
 
     def get_trades(
         self,
@@ -272,3 +368,11 @@ def market_window(market: dict[str, Any]) -> tuple[datetime, datetime] | None:
 
 def _game_sort_key(game: KalshiGame) -> datetime:
     return game.scheduled_start_utc or datetime.min.replace(tzinfo=UTC)
+
+
+def _backfill_game_sort_key(game: KalshiGame) -> tuple[date, datetime, str]:
+    return (
+        game.game_date or date.max,
+        game.scheduled_start_utc or datetime.max.replace(tzinfo=UTC),
+        game.event_ticker,
+    )

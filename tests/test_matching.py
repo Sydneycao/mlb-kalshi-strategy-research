@@ -109,6 +109,131 @@ def test_kalshi_ticker_scheduled_time_is_eastern_and_normalized_to_utc() -> None
     )
 
 
+def test_legacy_ticker_without_time_uses_occurrence_time() -> None:
+    occurrence = datetime(2025, 7, 12, 23, 10, tzinfo=UTC)
+
+    assert event_game_date("KXMLBGAME-25JUL12BOSNYY", occurrence) == date(
+        2025, 7, 12
+    )
+    assert event_scheduled_start("KXMLBGAME-25JUL12BOSNYY", occurrence) == occurrence
+
+
+def test_legacy_market_without_occurrence_time_is_still_well_formed() -> None:
+    event_ticker = "KXMLBGAME-25JUL12BOSNYY"
+    game = build_kalshi_game(
+        event_ticker,
+        "historical",
+        [
+            {
+                "event_ticker": event_ticker,
+                "ticker": f"{event_ticker}-BOS",
+                "yes_sub_title": "Boston",
+                "result": "yes",
+            },
+            {
+                "event_ticker": event_ticker,
+                "ticker": f"{event_ticker}-NYY",
+                "yes_sub_title": "New York Y",
+                "result": "no",
+            },
+        ],
+    )
+
+    assert game.game_date == date(2025, 7, 12)
+    assert game.scheduled_start_utc is None
+    assert game.construction_errors == ()
+
+
+def test_legacy_market_without_time_matches_unique_team_date() -> None:
+    market = _market_game(17)
+    market = KalshiGame(
+        event_ticker="KXMLBGAME-25JUL12BOSNYY",
+        source=market.source,
+        markets=market.markets,
+        teams=market.teams,
+        scheduled_start_utc=None,
+        game_date=market.game_date,
+        winner=market.winner,
+    )
+    game = _mlb_game(
+        game_pk=1,
+        start_hour=17,
+        away_score=5,
+        home_score=3,
+        game_number=1,
+    )
+
+    result = match_game(market, [game], tolerance=timedelta(hours=2))
+
+    assert isinstance(result, MatchedGame)
+    assert result.mlb.game_pk == 1
+    assert result.start_delta_seconds is None
+
+
+def test_legacy_doubleheader_uses_ticker_game_number() -> None:
+    market = _market_game(17)
+    market = KalshiGame(
+        event_ticker="KXMLBGAME-25JUL12BOSNYY2",
+        source=market.source,
+        markets=market.markets,
+        teams=market.teams,
+        scheduled_start_utc=None,
+        game_date=market.game_date,
+        winner="NYY",
+    )
+    first = _mlb_game(
+        game_pk=1,
+        start_hour=17,
+        away_score=5,
+        home_score=3,
+        game_number=1,
+    )
+    second = _mlb_game(
+        game_pk=2,
+        start_hour=23,
+        away_score=2,
+        home_score=4,
+        game_number=2,
+    )
+
+    result = match_game(market, [first, second], tolerance=timedelta(hours=2))
+
+    assert isinstance(result, MatchedGame)
+    assert result.mlb.game_pk == 2
+    assert result.start_delta_seconds is None
+
+
+def test_excessive_market_window_is_rejected() -> None:
+    market = _market_game(17)
+    market = KalshiGame(
+        event_ticker=market.event_ticker,
+        source=market.source,
+        markets=(
+            {
+                "ticker": "KXMLBGAME-LONG-BOS",
+                "open_time": "2025-07-01T00:00:00Z",
+                "settlement_ts": "2025-07-12T00:00:00Z",
+            },
+        ),
+        teams=market.teams,
+        scheduled_start_utc=market.scheduled_start_utc,
+        game_date=market.game_date,
+        winner=market.winner,
+    )
+    game = _mlb_game(
+        game_pk=1,
+        start_hour=17,
+        away_score=5,
+        home_score=3,
+        game_number=1,
+    )
+
+    result = match_game(market, [game], tolerance=timedelta(hours=2))
+
+    assert isinstance(result, Rejection)
+    assert result.reason_code == "EXCESSIVE_MARKET_WINDOW"
+
+
 def test_contract_no_subtitle_does_not_imply_winner() -> None:
     shared = {
         "event_ticker": "KXMLBGAME-25JUL121310BOSNYY",

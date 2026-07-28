@@ -12,7 +12,7 @@ from mlb_kalshi.time import optional_utc, parse_utc
 
 _EVENT_DATE = re.compile(
     r"^KXMLBGAME-(?P<year>\d{2})(?P<month>[A-Z]{3})(?P<day>\d{2})"
-    r"(?P<hour>\d{2})(?P<minute>\d{2})"
+    r"(?:(?P<hour>\d{2})(?P<minute>\d{2}))?"
 )
 _MONTHS = {
     month: index
@@ -40,7 +40,7 @@ def event_scheduled_start(
     """Decode KXMLBGAME's US Eastern scheduled start and return it in UTC."""
 
     match = _EVENT_DATE.match(event_ticker)
-    if match:
+    if match and match.group("hour") and match.group("minute"):
         eastern = datetime(
             2000 + int(match.group("year")),
             _MONTHS[match.group("month")],
@@ -86,8 +86,6 @@ def build_kalshi_game(
     }
     occurrence_time = min(starts) if starts else None
     scheduled_start = event_scheduled_start(event_ticker, occurrence_time)
-    if scheduled_start is None:
-        errors.append("event ticker and markets provide no scheduled start")
     if len(starts) > 1:
         errors.append("markets disagree on occurrence_datetime")
 
