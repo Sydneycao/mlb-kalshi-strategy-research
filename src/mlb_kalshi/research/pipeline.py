@@ -17,6 +17,7 @@ from mlb_kalshi.research.execution import (
     signal_records,
     summarize_executions,
 )
+from mlb_kalshi.research.models import ExecutionConfig
 from mlb_kalshi.research.schemas import (
     EXECUTION_SCHEMA,
     SIGNAL_SCHEMA,
@@ -53,6 +54,9 @@ class BacktestPipeline:
         input_run: str | None,
         strategy_names: list[str] | None,
         pregame_minutes: int,
+        contracts_per_trade: Decimal,
+        max_volume_participation: Decimal,
+        fee_rounding_quantum: Decimal,
     ) -> dict[str, Any]:
         input_manifest_path = resolve_input_manifest(
             self.settings.output_dir, input_run
@@ -91,7 +95,22 @@ class BacktestPipeline:
                 "kalshi_candlesticks_1m.parquet",
             )
         )
+        trades = _read_records(
+            _input_file(
+                self.settings.output_dir,
+                input_run_id,
+                normalized_files,
+                "trades",
+                "kalshi_trades.parquet",
+            )
+        )
         raw_dir = _raw_dir(self.settings.output_dir, input_run_id, input_manifest)
+        execution_config = ExecutionConfig(
+            contracts_per_trade=contracts_per_trade,
+            max_volume_participation=max_volume_participation,
+            fee_rounding_quantum=fee_rounding_quantum,
+        )
+        execution_config.validate()
 
         timeline = build_minute_timeline(
             matches=matches,
@@ -102,7 +121,12 @@ class BacktestPipeline:
         )
         plans = generate_trade_plans(timeline, selected_strategies)
         signals = signal_records(plans)
-        executions = execute_trade_plans(plans, timeline)
+        executions = execute_trade_plans(
+            plans,
+            timeline,
+            trades,
+            execution_config,
+        )
         summaries = summarize_executions(executions)
         validate_no_lookahead(signals, executions)
 
@@ -116,6 +140,14 @@ class BacktestPipeline:
             ),
             "filled_trade_plans": sum(
                 row["scenario"] == "base" and row["status"] == "filled"
+                for row in executions
+            ),
+            "entry_unfilled_trade_plans": sum(
+                row["scenario"] == "base" and row["status"] == "entry_unfilled"
+                for row in executions
+            ),
+            "exit_unfilled_trade_plans": sum(
+                row["scenario"] == "base" and row["status"] == "exit_unfilled"
                 for row in executions
             ),
         }
@@ -133,6 +165,22 @@ class BacktestPipeline:
             "two_sided_open_spread_minutes": sum(
                 row["yes_open_spread"] is not None for row in timeline
             ),
+        }
+        base_executions = [
+            row for row in executions if row["scenario"] == "base"
+        ]
+        capacity_quality = {
+            "trade_rows": len(trades),
+            "insufficient_entry_capacity_minutes": sum(
+                int(row["insufficient_entry_capacity_minutes"])
+                for row in base_executions
+            ),
+            "insufficient_exit_capacity_minutes": sum(
+                int(row["insufficient_exit_capacity_minutes"])
+                for row in base_executions
+            ),
+            "entry_unfilled_trade_plans": counts["entry_unfilled_trade_plans"],
+            "exit_unfilled_trade_plans": counts["exit_unfilled_trade_plans"],
         }
         run_id = new_run_id("backtest")
         output_dir = self.settings.output_dir / "research" / run_id
@@ -158,6 +206,8 @@ class BacktestPipeline:
             input_run_id=input_run_id,
             summaries=summaries,
             quote_quality=quote_quality,
+            capacity_quality=capacity_quality,
+            execution_config=execution_config,
         )
         manifest = {
             "run_id": run_id,
@@ -170,11 +220,26 @@ class BacktestPipeline:
                 "buy_price_rule": "next available YES ask open after signal minute closes",
                 "sell_price_rule": "next available YES bid open after signal minute closes",
                 "same_minute_extrema_executable": False,
-                "contracts_per_trade": 1,
-                "fees_included": False,
+                "contracts_per_trade": str(execution_config.contracts_per_trade),
+                "capacity_rule": (
+                    "all-or-none; at-or-better public trade volume in the "
+                    "execution minute times max_volume_participation"
+                ),
+                "max_volume_participation": str(
+                    execution_config.max_volume_participation
+                ),
+                "fee_type": "quadratic_with_maker_fees",
+                "fee_side": "taker",
+                "taker_fee_rate": str(execution_config.taker_fee_rate),
+                "fee_multiplier": str(execution_config.fee_multiplier),
+                "fee_rounding_quantum_dollars": str(
+                    execution_config.fee_rounding_quantum
+                ),
+                "fees_included": True,
             },
             "counts": counts,
             "quote_quality": quote_quality,
+            "capacity_quality": capacity_quality,
             "strategy_summary": summaries,
             "files": {key: str(path.resolve()) for key, path in files.items()},
         }
@@ -313,6 +378,8 @@ def _write_markdown_report(
     input_run_id: str,
     summaries: list[dict[str, Any]],
     quote_quality: dict[str, int],
+    capacity_quality: dict[str, int],
+    execution_config: ExecutionConfig,
 ) -> Path:
     lines = [
         "# Strategy smoke-sample comparison",
@@ -320,19 +387,22 @@ def _write_markdown_report(
         f"Input run: `{input_run_id}`",
         "",
         (
-            "These are one-contract diagnostics on a 10-game smoke sample. "
-            "Fees are excluded; the results are not evidence of profitability."
+            f"These are {execution_config.contracts_per_trade}-contract diagnostics "
+            "on a 10-game smoke sample. Net PnL includes quadratic Kalshi taker "
+            "fees on entry and exit. Results are not evidence of profitability."
         ),
         "",
-        "| Strategy | Scenario | Plans | Filled | Total PnL | Mean PnL | Win rate | "
-        "Missing entry minutes | Missing exit minutes |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "| Strategy | Scenario | Plans | Filled | Gross PnL | Fees | Net PnL | "
+        "Win rate | Entry capacity waits | Exit capacity waits |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for row in summaries:
         lines.append(
             "| {strategy} | {scenario} | {plans} | {filled_trades} | "
-            "{total_pnl_dollars} | {mean_pnl_dollars} | {win_rate} | "
-            "{missing_entry_quote_minutes} | {missing_exit_quote_minutes} |".format(
+            "{total_gross_pnl_dollars} | {total_fees_dollars} | "
+            "{total_pnl_dollars} | {win_rate} | "
+            "{insufficient_entry_capacity_minutes} | "
+            "{insufficient_exit_capacity_minutes} |".format(
                 **row
             )
         )
@@ -355,8 +425,29 @@ def _write_markdown_report(
                 f"{quote_quality['missing_yes_ask_open_minutes']}"
             ),
             "",
+            "## Executable capacity",
+            "",
+            (
+                "- Requested contracts per trade: "
+                f"{execution_config.contracts_per_trade}"
+            ),
+            (
+                "- Maximum share of compatible public trade volume: "
+                f"{execution_config.max_volume_participation}"
+            ),
+            (
+                "- Entry-unfilled plans: "
+                f"{capacity_quality['entry_unfilled_trade_plans']}"
+            ),
+            (
+                "- Exit-unfilled plans: "
+                f"{capacity_quality['exit_unfilled_trade_plans']}"
+            ),
+            "",
             "Executions use only the next available minute-open YES ask for buys "
-            "and YES bid for sells. Same-minute extrema are never executable.",
+            "and YES bid for sells. An all-or-none order also requires sufficient "
+            "same-minute public trade volume at that price or better after applying "
+            "the participation cap. Same-minute extrema are never executable.",
             "",
         ]
     )

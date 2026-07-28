@@ -128,7 +128,9 @@ strategies can be selected explicitly:
 ```bash
 uv run --python 3.12 mlb-kalshi backtest \
   --input-run smoke_20260724T022147.632330Z \
-  --strategies buy_the_dip,threat_resolution
+  --strategies buy_the_dip,threat_resolution \
+  --contracts-per-trade 10 \
+  --max-volume-participation 0.10
 ```
 
 Each market gets a continuous minute grid from three hours before scheduled first
@@ -144,8 +146,21 @@ The execution engine enforces these rules for every strategy:
 - same-minute high, low, close, and trade prices are never executable;
 - missing-quote minutes, bid/ask spreads, execution timestamps, and delays are
   retained for both legs;
+- orders are all-or-none for the configured contract quantity;
+- executable capacity is capped at the configured share of same-minute public
+  trade volume at the quote price or better; an undersized minute is skipped;
+- both legs pay the `KXMLBGAME` quadratic taker fee
+  `ceil_cent($0.07 × contracts × price × (1 - price))`;
 - results are emitted for base execution and one-cent adverse slippage
   (`buy + $0.01`, `sell - $0.01`).
+
+The default request is one contract and the default maximum volume participation
+is 10%. Public trades are an ex-post capacity proxy, not historical order-book
+depth, so a capacity-qualified fill is still a simulation. The fee model uses the
+`KXMLBGAME` taker multiplier of 1 and conservative whole-cent retail rounding on
+each all-or-none leg. Gross PnL, entry/exit fees, total fees, and net PnL are all
+retained; summaries use net PnL. Direct exchange members can select centicent
+rounding with `--fee-rounding-quantum 0.0001`.
 
 The initial strategy modules are deliberately fixed rather than optimized:
 
@@ -169,5 +184,5 @@ Research outputs are saved under `data/research/<run_id>/`:
 - `manifest.json`
 
 These are smoke-sample diagnostics, not evidence that a strategy is profitable.
-Each plan represents one contract; exchange fees are not yet modeled. Parameter
-search and out-of-sample evaluation should happen only after timeline audits pass.
+Parameter search and out-of-sample evaluation should happen only after timeline,
+fee, and executable-capacity audits pass.

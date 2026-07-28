@@ -5,6 +5,8 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
+CONTRACT_QUANTUM = Decimal("0.01")
+
 
 @dataclass(frozen=True, slots=True)
 class PlayObservation:
@@ -51,6 +53,32 @@ class TradePlan:
 
 
 @dataclass(frozen=True, slots=True)
+class ExecutionConfig:
+    contracts_per_trade: Decimal = Decimal("1.00")
+    max_volume_participation: Decimal = Decimal("0.1000")
+    taker_fee_rate: Decimal = Decimal("0.0700")
+    fee_multiplier: Decimal = Decimal("1.0000")
+    fee_rounding_quantum: Decimal = Decimal("0.0100")
+
+    def validate(self) -> None:
+        if self.contracts_per_trade <= 0:
+            raise ValueError("contracts_per_trade must be positive")
+        if (
+            self.contracts_per_trade.quantize(CONTRACT_QUANTUM)
+            != self.contracts_per_trade
+        ):
+            raise ValueError("contracts_per_trade must use 0.01-contract increments")
+        if not Decimal(0) < self.max_volume_participation <= Decimal(1):
+            raise ValueError("max_volume_participation must be greater than 0 and at most 1")
+        if self.taker_fee_rate < 0:
+            raise ValueError("taker_fee_rate cannot be negative")
+        if self.fee_multiplier < 0:
+            raise ValueError("fee_multiplier cannot be negative")
+        if self.fee_rounding_quantum <= 0:
+            raise ValueError("fee_rounding_quantum must be positive")
+
+
+@dataclass(frozen=True, slots=True)
 class QuoteFill:
     execution_at_utc: datetime
     price: Decimal
@@ -59,3 +87,6 @@ class QuoteFill:
     spread: Decimal | None
     delay_seconds: int
     missing_quote_minutes: int
+    compatible_trade_volume: Decimal
+    capacity_contracts: Decimal
+    insufficient_capacity_minutes: int
