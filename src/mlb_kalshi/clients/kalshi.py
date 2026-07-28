@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any, Literal
 from urllib.parse import quote
 
@@ -144,6 +144,68 @@ class KalshiClient:
         self._log.info("kalshi_games_discovered", **metadata["selected"])
         return selected, metadata
 
+    def discover_games_in_range(
+        self,
+        *,
+        start_date: date,
+        end_date: date,
+        max_games: int,
+        max_pages: int,
+    ) -> tuple[list[KalshiGame], dict[str, Any]]:
+        """Discover settled games chronologically inside an inclusive date range.
+
+        Backfills intentionally scan both storage tiers to remain correct as Kalshi's
+        historical cutoff advances. The resulting event catalog is deduplicated before
+        the caller checkpoints it, so subsequent resumes do not need to rediscover it.
+        """
+
+        if end_date < start_date:
+            raise ValueError("end_date cannot precede start_date")
+        if max_games < 1:
+            raise ValueError("max_games must be positive")
+
+        by_event: dict[str, KalshiGame] = {}
+        metadata: dict[str, Any] = {}
+        for source in ("current", "historical"):
+            markets, source_metadata = self.list_settled_markets(
+                source,
+                max_pages=max_pages,
+                target_events=None,
+                raw_section=f"backfill_discovery_{source}",
+            )
+            grouped: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
+            for market in markets:
+                event_ticker = market.get("event_ticker")
+                if isinstance(event_ticker, str):
+                    grouped[event_ticker].append(market)
+            for event_ticker, event_markets in grouped.items():
+                game = build_kalshi_game(event_ticker, source, event_markets)
+                if (
+                    game.game_date is not None
+                    and start_date <= game.game_date <= end_date
+                ):
+                    existing = by_event.get(event_ticker)
+                    if existing is None or len(game.markets) > len(existing.markets):
+                        by_event[event_ticker] = game
+            metadata[source] = source_metadata
+
+        selected = sorted(by_event.values(), key=_backfill_game_sort_key)[:max_games]
+        metadata["selected"] = {
+            "total": len(selected),
+            "current": sum(game.source == "current" for game in selected),
+            "historical": sum(game.source == "historical" for game in selected),
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
+            "max_games": max_games,
+        }
+        metadata["truncated_sources"] = [
+            source
+            for source in ("current", "historical")
+            if bool(metadata[source].get("truncated"))
+        ]
+        self._log.info("kalshi_backfill_games_discovered", **metadata["selected"])
+        return selected, metadata
+
     def get_candlesticks(
         self,
         *,
@@ -272,3 +334,11 @@ def market_window(market: dict[str, Any]) -> tuple[datetime, datetime] | None:
 
 def _game_sort_key(game: KalshiGame) -> datetime:
     return game.scheduled_start_utc or datetime.min.replace(tzinfo=UTC)
+
+
+def _backfill_game_sort_key(game: KalshiGame) -> tuple[date, datetime, str]:
+    return (
+        game.game_date or date.max,
+        game.scheduled_start_utc or datetime.max.replace(tzinfo=UTC),
+        game.event_ticker,
+    )

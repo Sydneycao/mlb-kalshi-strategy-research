@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import timedelta
 from typing import Any
 
@@ -39,14 +40,13 @@ def match_game(
         )
     if (
         len(market_game.teams) != 2
-        or market_game.scheduled_start_utc is None
         or market_game.game_date is None
         or market_game.winner is None
     ):
         return _rejection(
             market_game,
             "INCOMPLETE_MARKET_IDENTITY",
-            "market event lacks teams, date, scheduled start, or final result",
+            "market event lacks teams, date, or final result",
             base_details,
         )
 
@@ -79,48 +79,80 @@ def match_game(
             base_details,
         )
 
-    with_deltas = sorted(
-        (
-            (
-                abs(
-                    int(
-                        (
-                            game.scheduled_start_utc - market_game.scheduled_start_utc
-                        ).total_seconds()
-                    )
+    if market_game.scheduled_start_utc is None:
+        game_number = _event_game_number(market_game.event_ticker)
+        numbered_matches = (
+            [game for game in date_matches if game.game_number == game_number]
+            if game_number is not None
+            else []
+        )
+        if len(numbered_matches) == 1:
+            selected = numbered_matches[0]
+            base_details["matching_method"] = "ticker_game_number"
+            base_details["ticker_game_number"] = game_number
+        elif len(date_matches) == 1:
+            selected = date_matches[0]
+            base_details["matching_method"] = "unique_team_date"
+        else:
+            base_details["ambiguous_game_pks"] = [
+                game.game_pk for game in date_matches
+            ]
+            base_details["ticker_game_number"] = game_number
+            return _rejection(
+                market_game,
+                "AMBIGUOUS_DOUBLEHEADER",
+                (
+                    "legacy market has no scheduled time and multiple same-team "
+                    "games remain after date matching"
                 ),
-                game,
+                base_details,
             )
-            for game in date_matches
-        ),
-        key=lambda pair: (pair[0], pair[1].game_pk),
-    )
-    base_details["date_match_start_deltas_seconds"] = [
-        {"game_pk": game.game_pk, "delta_seconds": delta} for delta, game in with_deltas
-    ]
-    if not with_deltas or with_deltas[0][0] > tolerance.total_seconds():
-        return _rejection(
-            market_game,
-            "START_TIME_MISMATCH",
+        nearest_delta: int | None = None
+    else:
+        with_deltas = sorted(
             (
-                "nearest scheduled start exceeds the "
-                f"{int(tolerance.total_seconds() / 60)}-minute tolerance"
+                (
+                    abs(
+                        int(
+                            (
+                                game.scheduled_start_utc
+                                - market_game.scheduled_start_utc
+                            ).total_seconds()
+                        )
+                    ),
+                    game,
+                )
+                for game in date_matches
             ),
-            base_details,
+            key=lambda pair: (pair[0], pair[1].game_pk),
         )
+        base_details["date_match_start_deltas_seconds"] = [
+            {"game_pk": game.game_pk, "delta_seconds": delta}
+            for delta, game in with_deltas
+        ]
+        if not with_deltas or with_deltas[0][0] > tolerance.total_seconds():
+            return _rejection(
+                market_game,
+                "START_TIME_MISMATCH",
+                (
+                    "nearest scheduled start exceeds the "
+                    f"{int(tolerance.total_seconds() / 60)}-minute tolerance"
+                ),
+                base_details,
+            )
 
-    nearest_delta = with_deltas[0][0]
-    nearest = [game for delta, game in with_deltas if delta == nearest_delta]
-    if len(nearest) != 1:
-        base_details["ambiguous_game_pks"] = [game.game_pk for game in nearest]
-        return _rejection(
-            market_game,
-            "AMBIGUOUS_DOUBLEHEADER",
-            "multiple same-team games have equally close scheduled start times",
-            base_details,
-        )
-
-    selected = nearest[0]
+        nearest_delta = with_deltas[0][0]
+        nearest = [game for delta, game in with_deltas if delta == nearest_delta]
+        if len(nearest) != 1:
+            base_details["ambiguous_game_pks"] = [game.game_pk for game in nearest]
+            return _rejection(
+                market_game,
+                "AMBIGUOUS_DOUBLEHEADER",
+                "multiple same-team games have equally close scheduled start times",
+                base_details,
+            )
+        selected = nearest[0]
+        base_details["matching_method"] = "nearest_scheduled_start"
     selected_winner = mlb_winner(selected)
     if selected_winner is None:
         base_details.update(
@@ -163,6 +195,13 @@ def match_game(
         mlb=selected,
         start_delta_seconds=nearest_delta,
     )
+
+
+def _event_game_number(event_ticker: str) -> int | None:
+    match = re.search(r"(?P<number>[12])$", event_ticker)
+    # Legacy KXMLBGAME tickers omitted scheduled time. Their second game uses a
+    # trailing "2"; the otherwise unnumbered event is the first game.
+    return int(match.group("number")) if match else 1
 
 
 def _rejection(

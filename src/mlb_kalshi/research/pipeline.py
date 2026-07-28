@@ -62,8 +62,13 @@ class BacktestPipeline:
             self.settings.output_dir, input_run
         )
         input_manifest = json.loads(input_manifest_path.read_text(encoding="utf-8"))
-        if input_manifest.get("run_type") != "smoke":
-            raise ValueError("backtest input must be a completed smoke run")
+        run_type = input_manifest.get("run_type")
+        if run_type not in {"smoke", "backfill"} or (
+            run_type == "backfill" and input_manifest.get("status") != "completed"
+        ):
+            raise ValueError(
+                "backtest input must be a smoke run or completed backfill run"
+            )
 
         selected_strategies = _select_strategies(strategy_names)
         normalized_files = input_manifest.get("normalized_files", {})
@@ -259,12 +264,28 @@ def resolve_input_manifest(output_dir: Path, input_run: str | None) -> Path:
         candidate = output_dir / "runs" / input_run / "manifest.json"
         if candidate.is_file():
             return candidate
-        raise FileNotFoundError(f"smoke run manifest not found: {input_run}")
+        raise FileNotFoundError(f"ingestion run manifest not found: {input_run}")
 
-    candidates = sorted((output_dir / "runs").glob("smoke_*/manifest.json"))
-    if not candidates:
-        raise FileNotFoundError("no smoke run manifests found under data/runs")
-    return candidates[-1]
+    candidates = [
+        *(output_dir / "runs").glob("smoke_*/manifest.json"),
+        *(output_dir / "runs").glob("backfill_*/manifest.json"),
+    ]
+    completed: list[Path] = []
+    for candidate in candidates:
+        try:
+            payload = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if payload.get("run_type") == "smoke" or (
+            payload.get("run_type") == "backfill"
+            and payload.get("status") == "completed"
+        ):
+            completed.append(candidate)
+    if not completed:
+        raise FileNotFoundError(
+            "no smoke or completed backfill manifests found under data/runs"
+        )
+    return max(completed, key=lambda path: path.stat().st_mtime_ns)
 
 
 def validate_no_lookahead(

@@ -41,7 +41,7 @@ class MlbGame:
 class MatchedGame:
     kalshi: KalshiGame
     mlb: MlbGame
-    start_delta_seconds: int
+    start_delta_seconds: int | None
 
 
 @dataclass(frozen=True, slots=True)

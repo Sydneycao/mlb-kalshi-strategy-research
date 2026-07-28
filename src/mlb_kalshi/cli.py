@@ -4,9 +4,11 @@ import argparse
 import json
 import sys
 from collections.abc import Sequence
+from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
+from mlb_kalshi.backfill import HistoricalBackfillPipeline
 from mlb_kalshi.config import Settings
 from mlb_kalshi.logging import configure_logging
 from mlb_kalshi.pipeline import ResearchPipeline
@@ -17,7 +19,7 @@ from mlb_kalshi.research.pipeline import BacktestPipeline
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="mlb-kalshi",
-        description="Probe and smoke-test historical MLB/Kalshi market data.",
+        description="Ingest and research historical MLB/Kalshi market data.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -37,6 +39,45 @@ def build_parser() -> argparse.ArgumentParser:
     )
     smoke.add_argument("--output-dir", type=Path)
 
+    backfill = subparsers.add_parser(
+        "backfill",
+        help="Run or resume a game-checkpointed historical batch ingestion.",
+    )
+    backfill.add_argument(
+        "--job-id",
+        required=True,
+        help="Stable task name. Reusing it resumes the existing checkpoint.",
+    )
+    backfill.add_argument(
+        "--start-date",
+        type=_iso_date,
+        help="Inclusive MLB date for a new task (YYYY-MM-DD).",
+    )
+    backfill.add_argument(
+        "--end-date",
+        type=_iso_date,
+        help="Inclusive MLB date for a new task (YYYY-MM-DD).",
+    )
+    backfill.add_argument(
+        "--max-games",
+        type=int,
+        default=None,
+        help="Maximum events in the catalog (default: 500 for a new task).",
+    )
+    backfill.add_argument(
+        "--batch-size",
+        type=int,
+        default=None,
+        help="Completed/failed game attempts between consolidated checkpoints (default: 25).",
+    )
+    backfill.add_argument(
+        "--max-games-this-run",
+        type=int,
+        default=None,
+        help="Optional attempt cap for this invocation; rerun the same job-id to continue.",
+    )
+    backfill.add_argument("--output-dir", type=Path)
+
     backtest = subparsers.add_parser(
         "backtest",
         help="Build the minute timeline and run bias-safe strategy simulations.",
@@ -44,7 +85,10 @@ def build_parser() -> argparse.ArgumentParser:
     backtest.add_argument(
         "--input-run",
         default=None,
-        help="Smoke run ID or manifest path (default: latest local smoke run).",
+        help=(
+            "Smoke/completed-backfill run ID or manifest path "
+            "(default: latest completed local ingestion)."
+        ),
     )
     backtest.add_argument(
         "--strategies",
@@ -93,7 +137,7 @@ def run(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         settings = Settings.from_env().with_overrides(
-            max_games=getattr(args, "max_games", None),
+            max_games=args.max_games if args.command == "smoke" else None,
             output_dir=args.output_dir,
         )
     except ValueError as exc:
@@ -108,6 +152,20 @@ def run(argv: Sequence[str] | None = None) -> int:
     elif args.command == "smoke":
         summary = pipeline.smoke()
         exit_code = 1 if summary["counts"]["kalshi_games_selected"] == 0 else 0
+    elif args.command == "backfill":
+        try:
+            summary = HistoricalBackfillPipeline(settings).run(
+                job_id=args.job_id,
+                start_date=args.start_date,
+                end_date=args.end_date,
+                max_games=args.max_games,
+                batch_size=args.batch_size,
+                max_games_this_run=args.max_games_this_run,
+            )
+        except ValueError as exc:
+            print(f"configuration error: {exc}", file=sys.stderr)
+            return 2
+        exit_code = 1 if summary["status"] in {"empty", "needs_retry"} else 0
     else:
         if args.pregame_minutes < 0:
             print("configuration error: pregame-minutes cannot be negative", file=sys.stderr)
@@ -140,3 +198,10 @@ def run(argv: Sequence[str] | None = None) -> int:
 
 def main() -> None:
     raise SystemExit(run())
+
+
+def _iso_date(value: str) -> date:
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("expected YYYY-MM-DD") from exc
